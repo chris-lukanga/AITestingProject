@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Tuple
 
 from llm_gateway import LLMGateway
 from web_research import WebResearcher
+from services.taxonomy import OWASP
 
 
 # ============================================================
@@ -709,7 +710,7 @@ Return:
             self.gateway.generate_json(
 
                 system_instruction=(
-                    PLANNER_SYSTEM_PROMPT
+                    PLANNER_SYSTEM_PROMPT + '\nUse only the official 2026 mappings: ' + json.dumps(OWASP)
                 ),
 
                 user_prompt=prompt,

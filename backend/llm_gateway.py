@@ -12,6 +12,7 @@ import requests
 from dotenv import load_dotenv
 from google import genai
 from google.genai import types
+from services.security import redact
 
 
 # ============================================================
@@ -58,6 +59,7 @@ OPENROUTER_ONLY_FREE = (
 # ============================================================
 
 gemini_client = None
+GEMINI_CAPABILITIES = {}
 
 if GEMINI_API_KEY:
     gemini_client = genai.Client(
@@ -92,7 +94,10 @@ def parse_json_response(
 
     text = text.strip()
 
-    return json.loads(text)
+    result = json.loads(text)
+    if not isinstance(result, dict):
+        raise ValueError('Expected a JSON object from the model.')
+    return result
 
 
 # ============================================================
@@ -228,7 +233,6 @@ def is_zero_quota_error(
         "ZERO QUOTA",
         "QUOTA LIMIT: 0",
         "LIMIT: 0",
-        "RESOURCE_EXHAUSTED",
     ]
 
     return any(
@@ -334,6 +338,12 @@ def discover_gemini_models() -> List[str]:
             normalized = (
                 name.lower()
             )
+            if getattr(model, 'deprecated', False) or 'retired' in normalized:
+                continue
+            GEMINI_CAPABILITIES[name] = {
+                'input_token_limit': getattr(model, 'input_token_limit', None),
+                'output_token_limit': getattr(model, 'output_token_limit', None),
+            }
 
 
             # ----------------------------------------
@@ -371,7 +381,7 @@ def discover_gemini_models() -> List[str]:
         )
 
         print(
-            error
+            redact(str(error))
         )
 
         return []
@@ -419,7 +429,7 @@ def discover_gemini_models() -> List[str]:
 
     print(
         f"[DISCOVERY] Found "
-        f"{len(discovered)} usable Gemini planner models."
+        f"{len(discovered)} eligible Gemini candidates; quota is unverified."
     )
 
 
@@ -441,7 +451,7 @@ def _is_zero_price(
         return False
 
 
-def discover_openrouter_free_models() -> List[Dict[str, Any]]:
+def discover_openrouter_free_models(only_free=None) -> List[Dict[str, Any]]:
 
     if not OPENROUTER_API_KEY:
         return []
@@ -479,7 +489,7 @@ def discover_openrouter_free_models() -> List[Dict[str, Any]]:
         )
 
         print(
-            f"            {error}"
+            f"            {redact(str(error))}"
         )
 
         return []
@@ -564,7 +574,7 @@ def discover_openrouter_free_models() -> List[Dict[str, Any]]:
         )
 
 
-        if OPENROUTER_ONLY_FREE:
+        if OPENROUTER_ONLY_FREE if only_free is None else only_free:
 
             if not (
                 free_by_name
@@ -634,9 +644,16 @@ def discover_openrouter_free_models() -> List[Dict[str, Any]]:
 
 class LLMGateway:
 
-    def __init__(self):
+    def __init__(self, preferred_model=None, only_free=None):
 
         self.history = []
+        self.preferred_model = GEMINI_MODEL if preferred_model is None else preferred_model
+        self.only_free = OPENROUTER_ONLY_FREE if only_free is None else only_free
+        self.before_call = None
+        self.on_usage = None
+        self.on_event = None
+        self.max_output_tokens = 4096
+        self.timeout_seconds = 30
 
         self._gemini_models = None
 
@@ -687,11 +704,15 @@ class LLMGateway:
             "context_fingerprint":
                 fingerprint
         }
+        related = [h for h in self.history if h['context_fingerprint'] == fingerprint]
+        entry['fallback'] = any((h['provider'], h['model']) != (provider, model) for h in related)
 
         if error:
-            entry["error"] = error
+            entry["error"] = redact(error)
 
         self.history.append(entry)
+        if self.on_event:
+            self.on_event(entry)
 
 
     # ========================================================
@@ -717,9 +738,9 @@ class LLMGateway:
         # even if it has become stale.
         # --------------------------------------------
 
-        if GEMINI_MODEL:
+        if self.preferred_model and (not discovered or self.preferred_model in discovered):
             models.append(
-                GEMINI_MODEL
+                self.preferred_model
             )
 
 
@@ -769,10 +790,10 @@ class LLMGateway:
                 "openrouter/free",
 
             "context_length":
-                200000,
+                0,
 
             "supports_response_format":
-                True
+                False
         })
 
 
@@ -781,7 +802,7 @@ class LLMGateway:
         # --------------------------------------------
 
         discovered = (
-            discover_openrouter_free_models()
+            discover_openrouter_free_models(only_free=self.only_free)
         )
 
 
@@ -1071,7 +1092,7 @@ class LLMGateway:
         # EVERY CANDIDATE FAILED
         # ====================================================
 
-        self.save_history()
+        # The orchestrator persists run-specific history even on failure.
 
 
         raise RuntimeError(
@@ -1096,12 +1117,19 @@ class LLMGateway:
     fingerprint: str,
     purpose: str
 ):
+        capacity = GEMINI_CAPABILITIES.get(model, {})
+        required = len((system_instruction + user_prompt).encode())
+        if (capacity.get('input_token_limit') and required > capacity['input_token_limit']) or (capacity.get('output_token_limit') and self.max_output_tokens > capacity['output_token_limit']):
+            self._record('google', model, 'skipped', purpose, fingerprint, 0, error='Insufficient input/output capacity')
+            return None, False
 
         for attempt in range(
             1,
             GEMINI_MAX_RETRIES + 1
         ):
 
+            if self.before_call:
+                self.before_call(system_instruction, user_prompt)
             try:
 
                 if gemini_client is None:
@@ -1117,6 +1145,8 @@ class LLMGateway:
                         contents=user_prompt,
 
                         config=types.GenerateContentConfig(
+                            max_output_tokens=self.max_output_tokens,
+                            http_options=types.HttpOptions(timeout=int(self.timeout_seconds * 1000)),
 
                             system_instruction=(
                                 system_instruction
@@ -1135,6 +1165,9 @@ class LLMGateway:
 
 
                 response_text = response.text
+                usage = getattr(response, 'usage_metadata', None)
+                if self.on_usage and usage is not None:
+                    self.on_usage(int(getattr(usage, 'total_token_count', 0) or 0))
                 if response_text is None:
                     raise ValueError(
                         "Gemini returned no response text"
@@ -1178,6 +1211,7 @@ class LLMGateway:
 
                     attempt=attempt
                 )
+                metadata['fallback'] = self.history[-1]['fallback']
 
 
                 print(
@@ -1197,9 +1231,7 @@ class LLMGateway:
 
             except Exception as error:
 
-                error_text = str(
-                    error
-                )
+                error_text = redact(str(error))
 
                 code = get_error_code(
                     error
@@ -1426,6 +1458,11 @@ class LLMGateway:
         model_id = model_info[
             "id"
         ]
+        required = len((system_instruction + user_prompt).encode()) + self.max_output_tokens
+        context_length = model_info.get('context_length', 0)
+        if context_length and context_length < required:
+            self._record('openrouter', model_id, 'skipped', purpose, fingerprint, 0, error='Insufficient context capacity')
+            return None, False
 
         supports_response_format = (
             model_info.get(
@@ -1505,6 +1542,7 @@ class LLMGateway:
             ):
 
                 payload = {
+                    "max_tokens": self.max_output_tokens,
 
                     "model":
                         model_id,
@@ -1535,6 +1573,8 @@ class LLMGateway:
                     }
 
 
+                if self.before_call:
+                    self.before_call(system_instruction, user_prompt)
                 try:
 
                     response = requests.post(
@@ -1545,7 +1585,7 @@ class LLMGateway:
 
                         json=payload,
 
-                        timeout=120
+                        timeout=self.timeout_seconds
                     )
 
 
@@ -1555,7 +1595,7 @@ class LLMGateway:
 
                     if response.status_code >= 400:
 
-                        error_text = (
+                        error_text = redact(
 
                             f"{response.status_code} "
                             f"{response.text}"
@@ -1652,6 +1692,9 @@ class LLMGateway:
                         # Temporary errors
                         # ------------------------------------
 
+                        if is_zero_quota_error(error_text):
+                            return None, False
+
                         if (
                             response.status_code
                             in [
@@ -1701,6 +1744,8 @@ class LLMGateway:
                     # ========================================
 
                     body = response.json()
+                    if self.on_usage:
+                        self.on_usage(int((body.get('usage') or {}).get('total_tokens', 0) or 0))
 
 
                     choices = body.get(
@@ -1738,17 +1783,6 @@ class LLMGateway:
                     actual_model = body.get(
                         "model",
                         model_id
-                    )
-
-
-                    response_text = response.text
-                    if response_text is None:
-                        raise ValueError(
-                            "Gemini returned no response text"
-                        )
-
-                    result = parse_json_response(
-                        response_text
                     )
 
 
@@ -1794,6 +1828,7 @@ class LLMGateway:
 
                         attempt=attempt
                     )
+                    metadata['fallback'] = self.history[-1]['fallback']
 
 
                     print(
@@ -1854,9 +1889,7 @@ class LLMGateway:
 
                 except requests.RequestException as error:
 
-                    error_text = str(
-                        error
-                    )
+                    error_text = redact(str(error))
 
 
                     self._record(
@@ -1899,9 +1932,7 @@ class LLMGateway:
 
                 except Exception as error:
 
-                    error_text = str(
-                        error
-                    )
+                    error_text = redact(str(error))
 
 
                     self._record(
@@ -1969,7 +2000,7 @@ class LLMGateway:
             ) as file:
 
                 json.dump(
-                    self.history,
+                    redact(self.history),
                     file,
                     indent=2,
                     ensure_ascii=False

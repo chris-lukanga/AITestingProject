@@ -9,6 +9,7 @@ from dotenv import load_dotenv
 from llm_gateway import LLMGateway
 from web_research import WebResearcher
 from agents.planner_agent import PlannerAgent
+from services.security import redact
 
 
 load_dotenv()
@@ -131,9 +132,7 @@ class Orchestrator:
             encoding="utf-8"
         ) as file:
 
-            return json.load(
-                file
-            )
+            return redact(json.load(file))
 
 
     # ========================================================
@@ -201,7 +200,7 @@ class Orchestrator:
         ) as file:
 
             json.dump(
-                data,
+                redact(data),
                 file,
                 indent=2,
                 ensure_ascii=False
@@ -574,7 +573,7 @@ class Orchestrator:
 
                 print(
                     "[ORCHESTRATOR] Could not save "
-                    f"gateway history: {error}"
+                    f"gateway history: {redact(str(error))}"
                 )
 
 

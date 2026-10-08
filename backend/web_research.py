@@ -1,6 +1,7 @@
 from typing import Any, Dict, List
 
 from tavily import TavilyClient
+from services.security import redact
 
 
 class WebResearcher:
@@ -48,7 +49,7 @@ class WebResearcher:
         except Exception as error:
 
             print(
-                f"[WEB RESEARCH WARNING] {error}"
+                f"[WEB RESEARCH WARNING] {redact(str(error))}"
             )
 
             return []
@@ -68,7 +69,7 @@ class WebResearcher:
         seen_urls = set()
 
 
-        for query in queries:
+        for query in dict.fromkeys(queries):
 
             results = self.search(
                 query

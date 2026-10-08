@@ -4,6 +4,10 @@ from orchestrator import Orchestrator
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == 'serve':
+        import uvicorn
+        uvicorn.run('app:app', host='127.0.0.1', port=8000)
+        return
 
     # ========================================================
     # TARGET FILE
@@ -67,3 +71,4 @@ if __name__ == "__main__":
         print(
             f"{type(error).__name__}: {error}"
         )
+        sys.exit(1)

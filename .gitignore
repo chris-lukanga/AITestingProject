@@ -39,6 +39,13 @@ planner_checkpoint_*.json
 *.temp
 debug/
 logs/
+.runtime/
+*.sqlite*
+*.db*
+.pytest_cache/
+test-results/
+playwright-report/
+reports/
 
 # =========================
 # IDE / OS
