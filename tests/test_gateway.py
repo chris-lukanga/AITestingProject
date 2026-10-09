@@ -8,6 +8,8 @@ from services.budget import BudgetExceeded
 
 @pytest.fixture(autouse=True)
 def isolate(monkeypatch, tmp_path):
+    monkeypatch.setattr(g, 'GEMINI_COOLDOWNS', {})
+    monkeypatch.setattr(g, 'GEMINI_FREE_MODELS', {'first', 'second', 'gemini-text'})
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(g, 'GEMINI_API_KEY', None)
     monkeypatch.setattr(g, 'OPENROUTER_API_KEY', None)
@@ -52,6 +54,16 @@ def test_temporary_error_retries_same_model(monkeypatch):
     gateway, generate = client(monkeypatch, [RuntimeError('503 unavailable'), Obj(text='{"ok":true}')])
     _, meta = gateway.generate_json('system', 'user')
     assert meta['model'] == 'first' and generate.call_count == 2
+
+
+def test_daily_quota_and_retired_models_are_not_retried_by_next_stage(monkeypatch):
+    gateway, generate = client(monkeypatch, [RuntimeError('429 GenerateRequestsPerDay quota exceeded'),
+                                            Obj(text='{"ok":true}'), Obj(text='{"ok":true}')])
+    gateway.generate_json('system', 'research')
+    gateway.generate_json('system', 'generation')
+    assert generate.call_count == 3
+    assert [c.kwargs['model'] for c in generate.call_args_list] == ['first', 'second', 'second']
+    assert gateway._get_gemini_models() == ['second']
 
 
 def test_resource_exhausted_is_not_zero_quota():

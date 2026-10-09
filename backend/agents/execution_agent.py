@@ -44,7 +44,7 @@ class ExecutionAgent:
                         self.next_request = time.monotonic() + 1 / self.limits.requests_per_second
                     await self.checkpoint()
                     remaining = self.limits.max_seconds - self.budget.usage['elapsed_seconds']
-                    price = 0 if adapter.kind == 'campushelp' else (self.limits.price_per_million or 0)
+                    price = 0 if adapter.kind == 'campushelp' and adapter.engine == 'local' else (self.limits.price_per_million or 0)
                     messages = conversations.setdefault(turn['user'], [])
                     messages.append({'role': 'user', 'content': turn['input']})
                     payload = payload_for(adapter, turn, session, self.limits.max_output_tokens, messages)

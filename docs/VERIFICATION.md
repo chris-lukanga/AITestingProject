@@ -1,59 +1,82 @@
 # Verification record
 
-Verified October 8, 2026, on Windows using the ignored project-local Python 3.12.10 runtime and `requirements-lock.txt`.
+Verified **9 October 2026** on Windows with Python **3.14.8** and installed Google Chrome.
 
-Provider failure tests use deterministic mocks. No paid model calls were made. Bundled references are labeled offline. CampusHelp findings derive from actual HTTP responses.
+## Automated checks
 
-The suite exercises gateway behavior, API contracts, real HTTP weak/hardened execution, persistence, recovery, authorization, budgets, cancellation and headless Chrome/Playwright. A separate script launches processes, saves reports, restarts the platform and reloads history.
+The full regression run returned **120 passed** in **119.14 seconds**, including five Playwright browser checks. Coverage includes general API configuration, connection probing, 200 unique generic catalog cases, persistent agent traces, output reviews, frozen retests, provider cooldowns and generation recovery. Existing dependency deprecation warnings remain.
 
-Expected reproducible ten-case demo: weak = 2 PASS / 8 FAIL; hardened = 10 PASS / 0 FAIL; eleven real requests each. One failed check concerns an inert plain-text output contract and does not establish executable XSS.
-
-Original full implementation check: **84 passed, 0 failed, 1 warning**, in **41.82 seconds** using:
-
-```powershell
-.\.runtime\python\python.exe -m pytest -q
-```
-
-The warning is Starlette's deprecation of its TestClient HTTPX compatibility path. It does not affect the passing checks; dependency migration is deferred until the HTTPX2 path is reviewed and pinned.
-
-The three Playwright tests exercised the complete platform workflow, including pause/resume and restarted SSE streaming; all four clarification controls; CampusHelp chat/identity/mode changes; downloads; settings; and a 390px viewport.
-
-The final independent process verification used:
-
-```powershell
-.\.runtime\python\python.exe scripts\verify_demo.py --seed-workspace
-```
-
-| Mode | Run ID | PASS | FAIL | ERROR | Actual target requests | Observed target tokens | Elapsed seconds |
-|---|---|---:|---:|---:|---:|---:|---:|
-| Weak | `2cbfddd9c5df477980d19c3d30251b71` | 2 | 8 | 0 | 11 | 256 | 3.984 |
-| Hardened | `43cb26cc321f459fa1d35a8025f0f798` | 10 | 0 | 0 | 11 | 296 | 3.250 |
-
-Both modes had zero inconclusive/skipped outcomes and zero paid model calls. The comparison found **8 resolved, 0 repeated and 0 new failures**. Both reports loaded after terminating the platform and starting a new process with the same SQLite database.
-
-The weak run's next recommendation was **10% exploration / 90% focused retesting**. After hardened verification the recommendation was **50% / 50%**. Contributions are retained in each report; these are heuristic recommendations, not validated security scores.
-
-Saved default-workspace reports:
+Commands:
 
 ```text
-outputs/lab/reports/2cbfddd9c5df477980d19c3d30251b71/report.json
-outputs/lab/reports/2cbfddd9c5df477980d19c3d30251b71/report.html
-outputs/lab/reports/43cb26cc321f459fa1d35a8025f0f798/report.json
-outputs/lab/reports/43cb26cc321f459fa1d35a8025f0f798/report.html
-outputs/verification/summary.json
-outputs/browser-overview.png
+python -m pytest -q --disable-warnings
+python scripts/verify_demo.py
 ```
 
-Additional tests confirm cancellation before task startup, report regeneration from SQLite, recovery of paused runs, evaluation of saved HTTP evidence without resending, model-preference isolation, generated-budget rejection before dispatch, authenticated identity switching, nested API observations, explicit access-control denials, changed case identifiers, custom credential redaction and malformed judge handling. The original `python main.py example.json` route was exercised twice with mocked research/planning: it reused its research checkpoint and saved redacted plan, metadata and gateway history files. A mocked live-agent integration test exercises the shared gateway with actual CampusHelp HTTP execution; it is not evidence of successful calls to external providers.
+The Windows system `python` alias was unavailable, so verification used the installed executable under `%LOCALAPPDATA%/Python/pythoncore-3.14-64/`. `Start-Lab.cmd` now discovers this installation automatically. The actual CMD launcher started both updated websites and both health and HTML endpoints returned HTTP 200. Its owned smoke-test servers were stopped afterward. First-time dependency download was not exercised because dependencies were already installed.
 
-Provider fallback, discovery, retries, JSON parsing and quota errors were tested with mocked Gemini/OpenRouter responses. Live provider quotas, live Tavily searches, current billing and production-model security have **not** been verified. Research sources and the official OWASP 2026 taxonomy were separately checked on the web and are cited in the README.
+## Independent 200-case process runs
 
-`git check-ignore` confirmed that the runtime installation, SQLite database, reports/checkpoints, verification output and environment files are excluded. Generated evidence is under `outputs/` and is ignored by Git.
+These results came from actual HTTP requests to separately launched servers, not mocked responses in the testing platform.
 
-The normal `run_lab.py` launcher was also exercised at its documented ports. `/api/health` and HTML returned HTTP 200 for the platform on port 8000 and CampusHelp on port 8001. Headless Chrome loaded the default workspace overview and saved run history. `pip check` reported no broken requirements.
+| Version | Cases | Requests | PASS | FAIL | ERROR | Elapsed |
+|---|---:|---:|---:|---:|---:|---:|
+| Vulnerable | 200 | 228 | 111 | 89 | 0 | 42.138 s |
+| Protected | 200 | 228 | 200 | 0 | 0 | 52.806 s |
 
-After PowerShell blocked `Start-Lab.ps1` under the user's execution policy, `Start-Lab.cmd` was added and verified. It selected the project-local Python runtime and launched both servers; both health endpoints and both website pages returned HTTP 200. The verification process tree was stopped afterward, leaving ports 8000 and 8001 available. No execution-policy settings were changed.
+Both runs had zero inconclusive or skipped checks and zero provider charges. The comparison found **89 resolved failures**, with no repeated or new failures. Both reports loaded after the platform process was stopped and restarted.
 
-The launcher was subsequently made safe to repeat after a user encountered occupied ports. It now identifies healthy existing Lab servers, starts only missing services, checks readiness before reporting success, and reports unrelated port conflicts without a launcher traceback. Cleanup stops only processes created by that invocation. Real-process regressions cover repeated startup, partial startup, preservation of unrelated listeners and startup failure. Running `Start-Lab.cmd` against the user's healthy servers returned exit code 0 and printed both existing URLs; both health checks remained HTTP 200.
+Run IDs:
 
-Follow-up verification after the launcher fix: the expanded full suite returned **85 passed and 3 browser-startup failures** in 60.56 seconds, with the existing dependency warning. All three failures occurred before browser assertions with `Connection closed while reading from the driver`. The browser suite was rerun separately and **all 3 passed in 15.90 seconds**. All **88 checks**, including four real-process launcher regressions, therefore passed across the full run and browser rerun. No execution policy or existing server process was changed by the launcher verification.
+- Vulnerable: `d666b6b1db0441ae928fb5cd2b480ded`
+- Protected: `b2fe885229d24b2a992e39563f69688b`
+
+Evidence is saved in `outputs/verification/summary.json` and `outputs/verification/lab/reports/`. Browser screenshots are under `outputs/campushelp-desktop.png`, `outputs/campushelp-mobile.png` and `outputs/browser-overview.png`. Runtime evidence is ignored by Git.
+
+## What was exercised
+
+- Local handbook retrieval, source citations, natural wording, follow-up context and unknown-policy handling.
+- Confirmed ticket creation, cancellation, duplicate confirmation and cross-student isolation.
+- Distinct 50/100/200-case suites, request estimates, live generation batching and duplicate rejection.
+- One-click 100-case protected execution without endpoint configuration or environment keys; retests preserve the original case definitions.
+- Browser one-click execution, evidence inspection, policy browsing, ticket confirmation, downloads and a 390px viewport.
+- Live student responses through a mocked shared gateway, rejecting invented evidence without silently falling back.
+- Live test planning with and without a Tavily key, using mocked providers and real local target HTTP.
+
+These are results for a fictional campus and deliberately selected application protections. The suites include variants of shared risks. They do not establish production security or a real model's vulnerability rate. The earlier local comparison did not use provider calls. The live verification below separately exercised model providers and web research. Provider billing was not verified.
+
+## General workflow and live provider verification
+
+The redesigned workspace uses general HTTP connections as its main workflow. CampusHelp is an optional example. A separate workspace-policy HTTP fixture was exercised through the connection form, connection probe, run control, all nine agent cards, review gates and captured-response dialog. Generic catalog cases remain INCONCLUSIVE when their subjective contract cannot be judged locally. The catalog produced 200 distinct cases with retrieval, tools and memory disabled.
+
+A real live run used the **general HTTP adapter** against the local student application's live answer endpoint. Planning and generation used actual model calls and Tavily research: **9 queries, 20 sources**. The first 50-case generation attempt stopped after repeated inputs, retaining **30 validated cases**. That experience led to bounded repair, preservation of valid partial batches and saved-suite retesting; regression checks cover those behaviours.
+
+The retained 30-case suite was then executed with fresh live evaluation:
+
+| Run | Cases | PASS | FAIL | ERROR | INCONCLUSIVE | Target requests | Testing-model attempts | Elapsed |
+|---|---:|---:|---:|---:|---:|---:|---:|---:|
+| General HTTP / live | 30 | 23 | 0 | 7 | 0 | 30 | 26 | 80.274 s |
+
+Run: `ac333f22289e4230a82199bd0e6df873`. Generation source: `7558b43fc98d42dea8a07acd9fa57089`.
+
+Judgments include actual Gemini and OpenRouter responses alongside deterministic assertions. The target's successful live answers used Gemini; some application-controlled refusals used its local guardrails. Seven HTTP 503 responses reported that the target could not produce verified policy evidence. They remain ERROR, without a security conclusion. Gemini also reported exhausted daily quota during earlier preparation; the gateway now cools down those models and preserves fallback history.
+
+The completed execution reserved **$0.663615** at the configured ceiling; this is not an invoice amount. Its preparation run has separate recorded usage. Evidence, source activity and the report are saved under `outputs/verification/general-live/`. Desktop/mobile console screenshots are `outputs/general-agent-console.png` and `outputs/general-agent-console-mobile.png`.
+
+This verifies a local owned application through the general adapter, not an arbitrary production endpoint. The fresh 50-case run below verifies generation after the recovery changes. The 200-case protected/vulnerable local comparison above is a separate measurement.
+
+## Free-only fallbacks and fresh 50-case run
+
+The supplied `GROK_API_KEY` authenticated successfully against Groq; the gateway recognizes that legacy variable when its key has Groq's format. A direct Groq connection returned valid JSON using `qwen/qwen3.8-27b`. A direct xKiro connection returned valid JSON using `mistralai/ministral-14b`, selected from the live catalog's free tier with zero input/output prices. The xKiro catalog exposed 56 eligible free chat models during this check. No key value is stored in the verification artifacts.
+
+Only documented Gemini/Groq free-plan models and verified zero-price OpenRouter/xKiro models are eligible. Paid, premium, unknown-price and direct xAI models are excluded. The UI and API enforce free-only routing. Gemini/Groq accounts must remain on their Free tiers; their APIs do not turn a paid account into a free account. Provider documentation: [Google pricing](https://ai.google.dev/gemini-api/docs/pricing), [Groq free-plan limits](https://console.groq.com/docs/rate-limits), [xKiro model catalog](https://docs.xkiro.com/api/list-models/).
+
+A fresh general-HTTP live run generated **50 distinct inputs**, including repaired partial batches, and evaluated all 50 against the local live student API:
+
+| Cases | PASS | FAIL | ERROR | INCONCLUSIVE | Target requests | Testing-model attempts | Elapsed |
+|---:|---:|---:|---:|---:|---:|---:|---:|
+| 50 | 44 | 0 | 6 | 0 | 50 | 52 | 376.882 s |
+
+Run: `192a0831f4e2422b8c71529002fbebb3`. It reused the retained 20-source research checkpoint and recorded six agent quality reviews. Successful testing calls used Gemini 3.1 Flash-Lite, 3.5 Flash and 3.5 Flash-Lite. The new backup providers were separately verified; this run did not need to dispatch to them. Six target API errors remain visible as errors. The run reserved **$1.034620**, not a verified invoice amount.
+
+Evidence is under `outputs/verification/general-free-50/`, and free-provider checks are in `outputs/verification/free-fallbacks.json`. The latest report remained available after the apps were restarted. Real-run console screenshots are `outputs/live-free-agent-console.png` and `outputs/live-free-agent-console-mobile.png`.

@@ -232,6 +232,7 @@ class PlannerAgent:
 
         self.gateway = gateway
         self.researcher = researcher
+        self.on_research_event = None
 
 
     # ========================================================
@@ -442,6 +443,8 @@ TARGET CONTEXT:
         context: Dict[str, Any]
     ) -> Dict[str, Any]:
 
+        if self.on_research_event:
+            self.on_research_event('Selecting search queries', 'The model derives public research questions from the target architecture.', {}, 'working')
         queries, model_metadata = (
             self.generate_research_queries(
                 context
@@ -449,6 +452,9 @@ TARGET CONTEXT:
         )
 
 
+        if self.on_research_event:
+            self.on_research_event('Search queries selected', 'Queries cover the declared stack and instruction, data and tool boundaries.', {'queries': queries}, 'working')
+            self.researcher.on_event = self.on_research_event
         research = self.perform_research(
             queries
         )

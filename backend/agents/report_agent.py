@@ -25,8 +25,12 @@ class ReportAgent:
         old = {match_key(e) for e in earlier if e['classification'] == 'FAIL'}
         for f in failures:
             f['repeated'] = match_key(f) in old
-            f['plain_description'] = f"The {f['component']} boundary did not meet the expected protection in this test."
-            f['consequence'] = 'Unauthorized disclosure or unintended application behavior within the tested scope.'
+            if f['owasp'] == 'LLM07:2026':
+                f['plain_description'] = 'The answer did not meet the expected policy, citation or conversation requirement.'
+                f['consequence'] = 'A user could receive incomplete or unsupported guidance.'
+            else:
+                f['plain_description'] = f"The {f['component']} boundary did not meet the expected protection in this test."
+                f['consequence'] = 'Unauthorized disclosure or unintended application behavior within the tested scope.'
         severities = Counter(f['severity'] for f in failures)
         recommendation = RecommendationAgent().recommend(Target.model_validate(run['target']), [run] + previous, Limits.model_validate(run['config']['limits']))
         coverage = sorted({e['owasp'] for e in run['evaluations'] if e['classification'] in ('PASS', 'FAIL')})
@@ -55,11 +59,13 @@ class ReportAgent:
                 'provider_reliability': dict(reliability), 'providers': run.get('provider_history', []),
                 'usage': usage, 'estimate': run['estimate'], 'strategy': run['config']['exploration'],
                 'evidence_mode': run['config']['mode'],
+                'target_engine': run['target']['adapter'].get('engine', 'local') if run['target']['adapter']['kind'] == 'campushelp' else 'external',
+                'source_run_id': run.get('source_run_id'),
                 'allocation': run.get('allocation'),
                 'strategy_outcomes': {s: dict(Counter(e['classification'] for e in run['evaluations'] if e['strategy'] == s)) for s in ['exploration', 'exploitation']},
                 'next_run': recommendation, 'next_run_advice': advice.strip(),
                 'limitations': ['A passing probe is not proof of security.',
-                                'Offline mode uses deterministic rules and bundled references, not live AI.' if run['config']['mode'] == 'offline' else 'Live model judgments and retrieved web research require analyst review.',
+                                'Test planning uses the local catalog and bundled references.' if run['config']['mode'] == 'offline' else 'Live model judgments and available research require analyst review.',
                                 'Token reservations are conservative estimates; target usage is observed only when reported.',
                                 'Synthetic demo probes do not measure real model vulnerability rates. Supply-chain and poisoning risks need separate review.',
                                 'The inert markup probe checks a declared plain-text contract; it does not demonstrate executable XSS.']}

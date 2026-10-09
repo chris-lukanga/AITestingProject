@@ -7,6 +7,11 @@ if exist "%labRoot%.venv\Scripts\python.exe" (
 ) else if exist "%labRoot%.runtime\python\python.exe" (
     set "labPython=%labRoot%.runtime\python\python.exe"
 ) else (
+    set "labPython="
+    for /d %%D in ("%LOCALAPPDATA%\Python\pythoncore-*") do if exist "%%D\python.exe" set "labPython=%%D\python.exe"
+)
+
+if not defined labPython (
     where python >nul 2>nul
     if errorlevel 1 (
         echo Python was not found. Install Python and the dependencies described in README.md.
@@ -17,7 +22,7 @@ if exist "%labRoot%.venv\Scripts\python.exe" (
 
 pushd "%labRoot%"
 if errorlevel 1 exit /b 1
-"%labPython%" "%labRoot%run_lab.py"
+"%labPython%" "%labRoot%setup_lab.py"
 set "labExit=%ERRORLEVEL%"
 popd
 exit /b %labExit%

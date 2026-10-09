@@ -107,7 +107,7 @@ def test_real_http_weak_hardened_history_and_reports(tmp_path,campus_url):
             assert not client.get(f"/api/targets/{t['id']}/clarifications").json()['questions']
             ratio=client.get(f"/api/targets/{t['id']}/recommendation").json()
             assert 'contributions' in ratio
-            request={'target_id':t['id'],'exploration':50,'limits':{'requests_per_second':50,'concurrency':3}}
+            request={'target_id':t['id'],'exploration':50,'limits':{'max_tests':10,'requests_per_second':50,'concurrency':3}}
             assert client.post('/api/estimate',json=request).json()['can_start']
             created=client.post('/api/runs',json=request)
             assert created.status_code==201,created.text
@@ -135,7 +135,7 @@ def test_real_http_weak_hardened_history_and_reports(tmp_path,campus_url):
 def test_cancel_and_pause(tmp_path,campus_url):
     with TestClient(create_app(tmp_path)) as client:
         t=client.post('/api/targets',json=demo_target(campus_url)).json()
-        run=client.post('/api/runs',json={'target_id':t['id'],'limits':{'requests_per_second':1,'max_seconds':60}}).json()
+        run=client.post('/api/runs',json={'target_id':t['id'],'limits':{'max_tests':10,'requests_per_second':1,'max_seconds':60}}).json()
         id=run['id']
         client.post('/api/runs/'+id+'/start')
         assert client.post('/api/runs/'+id+'/pause').status_code==200
@@ -155,7 +155,7 @@ def test_recovery_and_resume(tmp_path,campus_url):
     store=app.state.store
     target=Target.model_validate(demo_target(campus_url));target.id='target'
     store.put('target',target.id,target.model_dump())
-    run=app.state.workflow.create(RunRequest(target_id='target',limits=Limits(requests_per_second=50)))
+    run=app.state.workflow.create(RunRequest(target_id='target',limits=Limits(max_tests=10, requests_per_second=50)))
     gateway=OfflineGateway()
     plan,_=gateway.generate_json('',json.dumps({'target':target.model_dump()}),purpose='platform_plan')
     run.update(status='running',plan=plan,research={'research':[]})

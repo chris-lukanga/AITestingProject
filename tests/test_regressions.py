@@ -87,7 +87,7 @@ def test_paused_run_recovers_as_interrupted(tmp_path):
 
 def test_demo_estimate_uses_rendered_requests_and_inputs():
     target = Target.model_validate(demo_target())
-    estimated = estimate(target, 50, Limits(max_requests=11))
+    estimated = estimate(target, 50, Limits(max_tests=10, max_requests=11))
     assert estimated['requests'] == 11 and estimated['can_start']
     assert estimated['tokens'] > 11 * 1024
 
@@ -110,6 +110,7 @@ def test_generator_cannot_invent_planning_objectives():
     result, _ = offline.generate_json('', json.dumps({'target': target, 'plan': plan, 'test_count': 1, 'exploration': 50}), purpose='test_generator')
     result['cases'][0]['objective_id'] = 'invented-objective'
     mock = Mock()
+    mock.max_output_tokens = 1024
     mock.generate_json.return_value = (result, {})
     with pytest.raises(ValueError, match='planning objective'):
         TestGeneratorAgent(mock).generate(target, plan, 1, 50)
@@ -242,12 +243,13 @@ def test_identity_credentials_redacted_even_with_custom_variable_names(monkeypat
 
 
 def test_gateway_preferences_are_per_run(monkeypatch):
+    monkeypatch.setattr(gateway_module, 'GEMINI_FREE_MODELS', {'first', 'second'})
     monkeypatch.setattr(gateway_module, 'discover_gemini_models', lambda: ['first', 'second'])
     first = gateway_module.LLMGateway(preferred_model='first', only_free=True)
     second = gateway_module.LLMGateway(preferred_model='second', only_free=False)
     assert first._get_gemini_models()[0] == 'first'
     assert second._get_gemini_models()[0] == 'second'
-    assert first.only_free and not second.only_free
+    assert first.only_free and second.only_free  # Free-only policy overrides a stale paid preference.
 
 
 @pytest.mark.parametrize('confidence', [None, 'not-a-number', float('nan'), 2])
@@ -277,10 +279,14 @@ def test_clarification_answers_are_validated():
         ClarificationAgent().apply(Target(), {'data': 'not-a-checkbox-list'})
 
 
-def test_live_workflow_uses_shared_gateway_and_real_target_http(tmp_path, campus_url, monkeypatch):
+@pytest.mark.parametrize('research_enabled', [True, False])
+def test_live_workflow_uses_shared_gateway_and_real_target_http(tmp_path, campus_url, monkeypatch, research_enabled):
     from agents.planner_agent import PlannerAgent
     from services.scenarios import objectives
-    monkeypatch.setenv('TAVILY_API_KEY', 'synthetic-mocked-tavily-key')
+    if research_enabled:
+        monkeypatch.setenv('TAVILY_API_KEY', 'synthetic-mocked-tavily-key')
+    else:
+        monkeypatch.delenv('TAVILY_API_KEY', raising=False)
     prepared = Mock(return_value={'research': [], 'mode': 'Mocked web research for integration test'})
     planned = Mock(return_value=({'summary': 'Mocked live planner output'}, {'provider': 'mock', 'model': 'mock-planner'}))
     monkeypatch.setattr(PlannerAgent, 'prepare_evidence', prepared)
@@ -302,7 +308,7 @@ def test_live_workflow_uses_shared_gateway_and_real_target_http(tmp_path, campus
     with TestClient(create_app(tmp_path)) as client:
         target = client.post('/api/targets', json=demo_target(campus_url)).json()
         request = {'target_id': target['id'], 'mode': 'live', 'exploration': 50,
-                   'limits': {'price_per_million': 1, 'max_tokens': 200000, 'requests_per_second': 50}}
+                   'limits': {'max_tests': 10, 'price_per_million': 1, 'max_tokens': 200000, 'requests_per_second': 50}}
         created = client.post('/api/runs', json=request)
         assert created.status_code == 201, created.text
         id = created.json()['id']
@@ -310,7 +316,8 @@ def test_live_workflow_uses_shared_gateway_and_real_target_http(tmp_path, campus
         run = wait_run(client, id)
         assert run['status'] == 'completed', run['error']
         assert len(instances) == 1
-        assert prepared.call_count == planned.call_count == 1
+        assert planned.call_count == 1
+        assert prepared.call_count == int(research_enabled)
         assert run['report']['counts']['FAIL'] == 8
         assert run['usage']['target_requests'] == 11 and run['usage']['model_requests'] == 2
         assert run['plan']['original_plan']['summary'] == 'Mocked live planner output'

@@ -13,6 +13,15 @@ from dotenv import load_dotenv
 from google import genai
 from google.genai import types
 from services.security import redact
+from services.free_providers import FreeChatFallback, GEMINI_FREE_MODELS, groq_key, zero_price
+
+# Short, process-local cooldowns prevent every stage retrying a retired model
+# or a daily quota that cannot recover within the run.
+GEMINI_COOLDOWNS = {}
+
+
+def daily_quota_exhausted(error):
+    return get_error_code(error) == '429' and bool(re.search(r'perday|per_day|per day|daily', str(error), re.I))
 
 
 # ============================================================
@@ -568,18 +577,16 @@ def discover_openrouter_free_models(only_free=None) -> List[Dict[str, Any]]:
         )
 
         free_by_price = (
-            _is_zero_price(prompt_price)
+            zero_price(prompt_price)
             and
-            _is_zero_price(completion_price)
+            zero_price(completion_price)
+            and all(zero_price(pricing.get(field, 0)) for field in ('request', 'internal_reasoning'))
         )
 
 
         if OPENROUTER_ONLY_FREE if only_free is None else only_free:
 
-            if not (
-                free_by_name
-                or free_by_price
-            ):
+            if not free_by_price:
                 continue
 
 
@@ -648,7 +655,7 @@ class LLMGateway:
 
         self.history = []
         self.preferred_model = GEMINI_MODEL if preferred_model is None else preferred_model
-        self.only_free = OPENROUTER_ONLY_FREE if only_free is None else only_free
+        self.only_free = True
         self.before_call = None
         self.on_usage = None
         self.on_event = None
@@ -656,8 +663,11 @@ class LLMGateway:
         self.timeout_seconds = 30
 
         self._gemini_models = None
+        self._last_gemini_success = None
 
         self._openrouter_models = None
+        self._free_fallbacks = [FreeChatFallback(provider, key) for provider, key in
+                                [('groq', groq_key()), ('xkiro', os.getenv('XKIRO_API_KEY', '').strip())] if key]
 
 
     # ========================================================
@@ -709,6 +719,11 @@ class LLMGateway:
 
         if error:
             entry["error"] = redact(error)
+        if provider == 'google' and status == 'failed' and error:
+            if get_error_code(error) == '404' or is_zero_quota_error(error) or daily_quota_exhausted(error):
+                GEMINI_COOLDOWNS[model] = time.monotonic() + 3600
+        if provider == 'google' and status == 'success':
+            self._last_gemini_success = model
 
         self.history.append(entry)
         if self.on_event:
@@ -724,7 +739,7 @@ class LLMGateway:
     ) -> List[str]:
 
         if self._gemini_models is not None:
-            return self._gemini_models
+            return self._eligible_gemini_models()
 
 
         discovered = discover_gemini_models()
@@ -761,6 +776,13 @@ class LLMGateway:
         self._gemini_models = models
 
 
+        return self._eligible_gemini_models()
+
+    def _eligible_gemini_models(self):
+        models = [m for m in self._gemini_models if m in GEMINI_FREE_MODELS and GEMINI_COOLDOWNS.get(m, 0) <= time.monotonic()]
+        if self._last_gemini_success in models:
+            models.remove(self._last_gemini_success)
+            models.insert(0, self._last_gemini_success)
         return models
 
 
@@ -1092,6 +1114,11 @@ class LLMGateway:
         # EVERY CANDIDATE FAILED
         # ====================================================
 
+        for provider in self._free_fallbacks:
+            result = provider.generate(self, system_instruction, user_prompt, temperature, purpose, fingerprint, parse_json_response)
+            if result is not None:
+                return result
+
         # The orchestrator persists run-specific history even on failure.
 
 
@@ -1330,7 +1357,7 @@ class LLMGateway:
 
                 if is_zero_quota_error(
                     error_text
-                ):
+                ) or daily_quota_exhausted(error_text):
 
                     print(
                         "[GATEWAY] This model has zero available "

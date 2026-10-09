@@ -18,6 +18,7 @@ class WebResearcher:
 
         self.max_total_sources = max_total_sources
         self.max_source_chars = max_source_chars
+        self.on_event = None
 
 
     # ========================================================
@@ -71,9 +72,15 @@ class WebResearcher:
 
         for query in dict.fromkeys(queries):
 
+            if self.on_event:
+                self.on_event('Searching public sources', 'Searching for evidence relevant to this target.', {'query': query}, 'working')
+
             results = self.search(
                 query
             )
+
+            if self.on_event:
+                self.on_event('Search results received', 'Duplicate URLs will be removed and source excerpts bounded.', {'query': query, 'results': len(results)}, 'working')
 
 
             for result in results:

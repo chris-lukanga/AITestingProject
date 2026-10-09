@@ -5,11 +5,14 @@ Authoritative schemas and constraints are at `/docs` and `/openapi.json`. Routes
 | Method | Path | Behavior |
 |---|---|---|
 | GET | `/health` | Product identity and backend status |
+| GET | `/agents` | Agent names, responsibilities and workflow stages |
+| POST | `/demo-runs` | Start the local demo with `{ "tests": 100, "mode": "weak" }`; 50/100/200 supported, optional `source_run_id` freezes a prior suite |
 | GET | `/demo-target?mode=weak` | Authorized synthetic demo configuration |
 | GET | `/example` | Existing example.json |
 | GET / POST | `/targets` | List / save validated target |
 | POST | `/targets/import` | Import target JSON |
 | GET | `/targets/{id}` | Stored target |
+| POST | `/targets/{id}/probe` | One authorized HTTP connection check with response preview, status and timing |
 | GET / POST | `/targets/{id}/clarifications` | Missing questions / apply answers |
 | GET | `/targets/{id}/recommendation` | Ratio and heuristic contributions |
 | POST | `/estimate` | Preflight warnings and estimates |
@@ -18,6 +21,8 @@ Authoritative schemas and constraints are at `/docs` and `/openapi.json`. Routes
 | POST | `/runs/{id}/start`, `/pause`, `/resume`, `/cancel` | Control workflow |
 | PATCH | `/runs/{id}/limits` | Explicit limit change on stopped run |
 | GET | `/runs/{id}/events` | Persistent SSE stream |
+| GET | `/runs/{id}/trace` | Saved event snapshot, including agent activity and quality reviews |
+| POST | `/runs/{id}/retest` | Create a stopped run's saved suite with a fresh budget; start separately |
 | GET | `/runs/{id}/cases`, `/findings`, `/research` | Cases, failures and sources/plan |
 | GET | `/runs/{id}/report` | JSON; `format=html` and `download=true` supported |
 | GET | `/compare?first={id}&second={id}` | Repeated/new/resolved/not-retested failures |
@@ -31,7 +36,7 @@ Existing architecture sections are preserved. Execution additionally requires an
 
 ```json
 {
-  "application": {"name": "Authorized staging assistant", "purpose": "Synthetic support testing"},
+  "application": {"name": "Authorized staging assistant", "purpose": "Synthetic support testing", "requirements": "Answer from approved documents, cite sources and require confirmation before changing records."},
   "llm": {"provider": "Target provider", "model": "Target model"},
   "integration": {"rag_enabled": true, "tools_enabled": false, "conversation_memory": true},
   "testing_scope": {
@@ -77,11 +82,11 @@ No redirects, URL credentials, Host overrides or credential-bearing headers are 
   "exploration": 50,
   "mode": "offline",
   "limits": {
-    "max_tests": 10,
-    "max_requests": 60,
-    "max_tokens": 100000,
+    "max_tests": 100,
+    "max_requests": 500,
+    "max_tokens": 1000000,
     "budget_usd": 1,
-    "max_seconds": 120,
+    "max_seconds": 180,
     "concurrency": 2,
     "requests_per_second": 5,
     "timeout_seconds": 10,
@@ -120,3 +125,15 @@ $run = Invoke-RestMethod "$base/runs" -Method Post -ContentType 'application/jso
 Invoke-RestMethod "$base/runs/$($run.id)/start" -Method Post
 Invoke-RestMethod "$base/runs/$($run.id)"
 ```
+
+## CampusHelp and optional live AI
+
+The local homepage demo supplies its own endpoint and scope. It always uses `adapter.engine="local"`, even when provider keys exist. The student site starts protected, with the handbook engine selected.
+
+`GET http://127.0.0.1:8001/api/policies` returns the fictional handbook. Chat responses include `sources`, `pending_ticket`, `tool_calls`, `engine`, `provider` and `model`. `POST /api/chat` accepts `message`, `session_id`, `user` (student-a/student-b), `mode` (weak/hardened) and `engine` (local/live). Demo identities are selectors, not production authentication. All state-changing actions affect only in-memory demo tickets.
+
+For live student answers, set one `GEMINI_API_KEY` or `OPENROUTER_API_KEY` in `.env`, restart, and select Live AI. The shared gateway selects exact evidence from retrieved public policies. The server rejects invented excerpts. Calls are explicit; local mode never silently becomes live. To execute tests against that path, choose `adapter.engine="live"` and supply a conservative `price_per_million` ceiling. Provider calls and quotas have not been verified against a real key in the automated test suite. Application-control responses (for example, ticket confirmation and access denial) are deterministic in both engines and identify their provider as local.
+
+Live planning no longer needs Tavily: without `TAVILY_API_KEY` it uses the bundled research references. Generation uses batches of five cases with bounded model output rather than requesting the entire suite in one response. Retries, batches and evaluations all consume the shared run budget.
+
+Defaults are 100 cases; the catalog includes policy questions, conversation and ticket workflows, and adversarial variants. Case count is independent of the exploration percentage. A protected retest using `source_run_id` reuses the exact original case definitions.

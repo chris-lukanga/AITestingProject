@@ -24,6 +24,6 @@ def render(value, replacements):
 
 def payload_for(adapter, turn, session, max_tokens, messages):
     if adapter.kind == 'campushelp':
-        return {'message': turn['input'], 'session_id': session, 'user': turn['user'], 'mode': adapter.mode, 'max_tokens': max_tokens}
+        return {'message': turn['input'], 'session_id': session, 'user': turn['user'], 'mode': adapter.mode, 'engine': adapter.engine, 'max_tokens': max_tokens}
     return render(adapter.request_template, {'input': turn['input'], 'session': session, 'user': turn['user'],
                                             'mode': adapter.mode, 'max_tokens': max_tokens, 'messages': messages})

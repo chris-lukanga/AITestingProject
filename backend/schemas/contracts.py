@@ -1,6 +1,16 @@
 from typing import Any, Literal
 from urllib.parse import urlsplit
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from services.taxonomy import OWASP
+
+
+def category_identifier(value):
+    if isinstance(value, str):
+        value = value.strip()
+        for identifier, label in OWASP.items():
+            if value in (identifier, f'{identifier}: {label}', f'{identifier} - {label}'):
+                return identifier
+    raise ValueError('Use an official OWASP 2026 category identifier.')
 
 
 class Adapter(BaseModel):
@@ -18,6 +28,7 @@ class Adapter(BaseModel):
     auth_header: str = 'Authorization'
     auth_prefix: str = 'Bearer '
     mode: Literal['weak', 'hardened'] = 'weak'
+    engine: Literal['local', 'live'] = 'local'
     max_response_bytes: int = Field(default=65536, ge=1024, le=1048576)
 
     @field_validator('endpoint')
@@ -85,11 +96,11 @@ class Target(BaseModel):
 
 
 class Limits(BaseModel):
-    max_tests: int = Field(default=10, ge=1, le=200)
-    max_requests: int = Field(default=60, ge=1, le=1000)
-    max_tokens: int = Field(default=100000, ge=100, le=10000000)
+    max_tests: int = Field(default=100, ge=1, le=200)
+    max_requests: int = Field(default=500, ge=1, le=1000)
+    max_tokens: int = Field(default=1000000, ge=100, le=10000000)
     budget_usd: float = Field(default=1, ge=0, le=1000)
-    max_seconds: int = Field(default=120, ge=1, le=3600)
+    max_seconds: int = Field(default=180, ge=1, le=3600)
     concurrency: int = Field(default=2, ge=1, le=10)
     requests_per_second: float = Field(default=5, gt=0, le=50)
     timeout_seconds: float = Field(default=10, ge=0.1, le=120)
@@ -108,7 +119,7 @@ class RunRequest(BaseModel):
 class PlanningObjective(BaseModel):
     id: str = Field(min_length=1)
     component: str = Field(min_length=1)
-    owasp: str
+    owasp: str = Field(json_schema_extra={'enum': list(OWASP)})
     testing_objective: str = Field(min_length=1)
     severity: Literal['critical', 'high', 'medium', 'low']
     priority: int = Field(ge=1, le=10)
@@ -121,15 +132,12 @@ class PlanningObjective(BaseModel):
     @field_validator('owasp')
     @classmethod
     def official_mapping(cls, value):
-        from services.taxonomy import OWASP
-        if value not in OWASP:
-            raise ValueError('Use an official OWASP 2026 category identifier.')
-        return value
+        return category_identifier(value)
 
 
 class SecurityPlan(BaseModel):
     model_config = ConfigDict(extra='allow')
-    objectives: list[PlanningObjective] = Field(min_length=1, max_length=200)
+    objectives: list[PlanningObjective] = Field(min_length=1, max_length=300)
     trust_boundaries: list[Any] = Field(default_factory=list)
     untested_risks: list[str] = Field(default_factory=list)
 
@@ -165,7 +173,7 @@ class TestCase(BaseModel):
     regression_key: str = ''
     title: str
     component: str
-    owasp: str
+    owasp: str = Field(json_schema_extra={'enum': list(OWASP)})
     risk: str
     turns: list[Turn] = Field(min_length=1, max_length=5)
     expected: str
@@ -178,3 +186,8 @@ class TestCase(BaseModel):
     repetitions: int = Field(default=1, ge=1, le=5)
     strategy: Literal['exploration', 'exploitation'] = 'exploration'
     mitigation: str
+
+    @field_validator('owasp')
+    @classmethod
+    def official_mapping(cls, value):
+        return category_identifier(value)

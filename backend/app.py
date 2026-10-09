@@ -23,6 +23,9 @@ from agents.clarification_agent import ClarificationAgent
 from agents.recommendation_agent import RecommendationAgent
 from agents.report_agent import ReportAgent
 from services.history import same_target, compare_evaluations
+from services.agent_manifest import AGENTS
+from services.security import enforce_scope
+from services.free_providers import groq_key
 
 
 class EstimateRequest(BaseModel):
@@ -37,7 +40,13 @@ class Settings(BaseModel):
     default_limits: Limits = Field(default_factory=Limits)
     retention_days: int = Field(default=90, ge=1, le=3650)
     preferred_model: str = os.getenv('GEMINI_MODEL', '')
-    only_free: bool = os.getenv('OPENROUTER_ONLY_FREE', 'true').lower() == 'true'
+    only_free: Literal[True] = True
+
+
+class DemoRunRequest(BaseModel):
+    mode: Literal['weak', 'hardened'] = 'weak'
+    tests: Literal[50, 100, 200] = 100
+    source_run_id: str = ''
 
 
 def create_app(data_dir=None):
@@ -90,9 +99,62 @@ def create_app(data_dir=None):
     def example():
         return json.loads((ROOT / 'backend' / 'example.json').read_text(encoding='utf-8'))
 
+    @app.post('/api/demo-runs', status_code=201)
+    async def demo_run(config: DemoRunRequest):
+        # The bundled local application is already in scope. No endpoint, JSON,
+        # provider settings or separate authorization form is needed for this path.
+        import httpx
+        target = Target.model_validate(demo_target(mode=config.mode))
+        source = get('run', config.source_run_id) if config.source_run_id else None
+        if source and (source['status'] != 'completed' or source['target']['adapter']['kind'] != 'campushelp'
+                       or source['target']['adapter']['endpoint'] != target.adapter.endpoint
+                       or source['target']['adapter'].get('engine', 'local') != 'local'
+                       or len(source['cases']) != config.tests):
+            raise HTTPException(422, 'Retest requires a completed local demo run with the same suite size and endpoint.')
+        try:
+            async with httpx.AsyncClient(timeout=2, trust_env=False) as client:
+                response = await client.get(target.adapter.endpoint.removesuffix('/api/chat') + '/api/health')
+                if response.status_code != 200 or response.json().get('service') != 'campushelp-ai':
+                    raise ValueError('Wrong service')
+        except (httpx.HTTPError, ValueError):
+            raise HTTPException(503, 'CampusHelp is not running. Start both websites with Start-Lab.cmd or python run_lab.py.')
+        target.id = uuid.uuid4().hex
+        store.put('target', target.id, target.model_dump())
+        request = RunRequest(target_id=target.id, limits=Limits(max_tests=config.tests, requests_per_second=15, concurrency=4))
+        run = workflow.create(request)
+        if source:
+            # Freeze the original inputs/assertions for a controlled comparison.
+            run.update(cases=source['cases'], plan=source['plan'], research=source['research'], source_run_id=source['id'])
+            store.put('run', run['id'], run)
+        return workflow.action(run['id'], 'start')
+
     @app.get('/api/targets')
     def targets():
         return store.list('target')
+
+    @app.get('/api/agents')
+    def agents():
+        return {'agents': AGENTS}
+
+    @app.post('/api/targets/{id}/probe')
+    async def probe(id: str):
+        from agents.execution_agent import ExecutionAgent
+        from services.budget import Budget
+        target = Target.model_validate(get('target', id))
+        try:
+            enforce_scope(target)
+            limits = Limits(max_tests=1, max_requests=1, max_tokens=100000, max_seconds=20,
+                            timeout_seconds=15, max_output_tokens=64)
+            case = {'id': 'connection-check', 'turns': [{'input': 'Hello. Briefly describe what you can help with.', 'user': 'test-user' if target.adapter.kind == 'http' else 'student-a'}],
+                    'repetitions': 1, 'assertions': []}
+            result = await ExecutionAgent(target, limits, Budget(limits), asyncio.Event(), asyncio.Event()).execute(case)
+            observation = result['turns'][0]
+            return {'connected': observation['outcome'] == 'OK', 'status': observation['status'],
+                    'latency_ms': observation['latency_ms'], 'provider': observation.get('provider'), 'model': observation.get('model'),
+                    'response_preview': observation['response'][:1200], 'error': observation.get('error'),
+                    'response_fields': list(observation.get('body', {}))}
+        except ValueError as error:
+            raise HTTPException(422, str(error))
 
     @app.post('/api/targets', status_code=201)
     @app.post('/api/targets/import', status_code=201)
@@ -166,6 +228,26 @@ def create_app(data_dir=None):
         events = [dict(event, run_id=run['id']) for run in store.list('run')[:5] for event in store.events(run['id'])]
         return {'events': sorted(events, key=lambda e: e['timestamp'], reverse=True)[:12]}
 
+    @app.post('/api/runs/{id}/retest', status_code=201)
+    def retest(id: str):
+        source = get('run', id)
+        if source['status'] in ('running', 'paused', 'created') or not source['cases']:
+            raise HTTPException(409, 'Retest requires a stopped run with saved test cases.')
+        config = dict(source['config'])
+        config['limits'] = dict(config['limits'], max_tests=len(source['cases']))
+        try:
+            run = workflow.create(RunRequest.model_validate(config))
+        except ValueError as error:
+            raise HTTPException(422, str(error))
+        run.update(plan=source['plan'], research=source['research'],
+                   cases=json.loads(json.dumps(source['cases'])), generation_complete=True,
+                   source_run_id=id)
+        store.put('run', run['id'], run)
+        workflow.emit(run, 'Orchestrator', 'Saved suite selected for retest',
+                      'Use the saved inputs, assertions and plan with a fresh execution budget.',
+                      {'source_run_id': id, 'cases': len(run['cases'])})
+        return run
+
     @app.post('/api/runs/{id}/{action}')
     async def run_action(id: str, action: str):
         try:
@@ -210,6 +292,11 @@ def create_app(data_dir=None):
                 await asyncio.sleep(0.5)
         return StreamingResponse(stream(), media_type='text/event-stream', headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
+    @app.get('/api/runs/{id}/trace')
+    def trace(id: str):
+        get('run', id)
+        return {'events': store.events(id)}
+
     @app.get('/api/runs/{id}/report')
     def report(id: str, format: str = 'json', download: bool = False):
         run = get('run', id)
@@ -242,11 +329,15 @@ def create_app(data_dir=None):
         return {'offline': {'available': True, 'model': 'deterministic-rules-v1'},
                 'gemini': {'configured': bool(os.getenv('GEMINI_API_KEY')), 'availability': 'Not verified; discovered models can still have no quota'},
                 'openrouter': {'configured': bool(os.getenv('OPENROUTER_API_KEY')), 'availability': 'Not verified; free models have quotas'},
+                'groq': {'configured': bool(groq_key()), 'availability': 'Free-plan models only; your Groq account must remain on its Free plan'},
+                'xkiro': {'configured': bool(os.getenv('XKIRO_API_KEY')), 'availability': 'Verified free catalog models only; paid and premium tiers are excluded'},
+                'grok': {'configured': bool(os.getenv('GROK_API_KEY', '').startswith('xai-') or os.getenv('XAI_API_KEY')), 'availability': 'Disabled: direct xAI models are paid'},
                 'tavily': {'configured': bool(os.getenv('TAVILY_API_KEY'))}}
 
     @app.get('/api/settings')
     def settings_get():
         return dict(store.get('settings', 'default') or Settings().model_dump(), product=app.title,
+                    only_free=True,
                     allowed_endpoints=[x for x in os.getenv('LAB_ALLOWED_ENDPOINTS', '').split(',') if x])
 
     @app.put('/api/settings')

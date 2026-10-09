@@ -17,7 +17,7 @@ def target_estimate(target, cases, limits):
                 requests += 1
                 # Bound retained assistant content by the adapter's response byte limit.
                 messages.append({'role': 'assistant', 'content': 'x' * target.adapter.max_response_bytes})
-    price = 0 if target.adapter.kind == 'campushelp' else limits.price_per_million
+    price = 0 if target.adapter.kind == 'campushelp' and target.adapter.engine == 'local' else limits.price_per_million
     return {'requests': requests, 'tokens': tokens, 'cost_usd': None if price is None else tokens * price / 1e6}
 
 
@@ -37,7 +37,7 @@ class BudgetExceeded(RuntimeError):
 
 
 def estimate(target, exploration, limits, mode='offline'):
-    tests = min(limits.max_tests, (10 if target.adapter.kind == 'campushelp' else 6) + exploration // 20)
+    tests = limits.max_tests
     requests = tests * (4 if exploration < 35 else 2) + (0 if mode == 'offline' else 8)
     tokens = requests * (1200 + limits.max_output_tokens) + (0 if mode == 'offline' else 30000)
     if mode == 'offline' and target.adapter.kind == 'campushelp':
@@ -49,7 +49,7 @@ def estimate(target, exploration, limits, mode='offline'):
         projected = target_estimate(target, generated, limits)
         requests, tokens = projected['requests'], projected['tokens']
     seconds = requests / limits.requests_per_second + tests * 0.2
-    price = 0 if target.adapter.kind == 'campushelp' and mode == 'offline' else limits.price_per_million
+    price = 0 if target.adapter.kind == 'campushelp' and target.adapter.engine == 'local' and mode == 'offline' else limits.price_per_million
     cost = None if price is None else tokens * price / 1e6
     violations = []
     for label, value, cap in [('requests', requests, limits.max_requests), ('tokens', tokens, limits.max_tokens), ('seconds', seconds, limits.max_seconds)]:

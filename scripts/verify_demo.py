@@ -10,6 +10,7 @@ from pathlib import Path
 import httpx
 
 ROOT=Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT))
 sys.path.insert(0,str(ROOT/'backend'))
 from services.scenarios import demo_target
 
@@ -53,21 +54,23 @@ def main():
                 questions=call(f"/api/targets/{target['id']}/clarifications")
                 assert not any(q['essential'] for q in questions['questions'])
                 recommendation=call(f"/api/targets/{target['id']}/recommendation")
-                request={'target_id':target['id'],'exploration':50,'mode':'offline','limits':{'requests_per_second':20}}
+                request={'target_id':target['id'],'exploration':50,'mode':'offline','limits':{'max_tests':200,'requests_per_second':20,'concurrency':4}}
                 estimate=call('/api/estimate',request);assert estimate['can_start']
                 run=call('/api/runs',request);ids.append(run['id'])
                 call(f"/api/runs/{run['id']}/start",{})
-                deadline=time.monotonic()+30
+                deadline=time.monotonic()+180
                 while time.monotonic()<deadline:
                     run=call(f"/api/runs/{run['id']}")
                     if run['report']:break
                     time.sleep(.1)
                 assert run['status']=='completed',run.get('error')
-                assert run['report']['counts']['FAIL']==(8 if mode=='weak' else 0)
+                assert len(run['evaluations']) == 200
+                assert run['report']['counts']['ERROR'] == 0
+                assert run['report']['counts']['FAIL'] > 0 if mode == 'weak' else run['report']['counts']['FAIL'] == 0
                 results.append({'mode':mode,'run_id':run['id'],'counts':run['report']['counts'],'usage':run['usage'],'recommended_before':recommendation['exploration'],'next_recommended':run['report']['next_run']['exploration']})
                 print(json.dumps(results[-1]),flush=True)
             comparison=call(f'/api/compare?first={ids[0]}&second={ids[1]}')
-            assert len(comparison['resolved'])==8
+            assert len(comparison['resolved']) == results[0]['counts']['FAIL']
         platform.terminate();platform.wait(timeout=5)
         restarted,log,base=launch('app:app',app_port);processes.append((restarted,log))
         for id in ids:

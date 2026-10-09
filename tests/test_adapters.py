@@ -60,7 +60,7 @@ async def test_execution_failure_evidence(monkeypatch,mode):
     client_type=httpx.AsyncClient
     monkeypatch.setattr('agents.execution_agent.httpx.AsyncClient',lambda **kwargs:client_type(transport=httpx.MockTransport(handle),**kwargs))
     target=Target.model_validate(demo_target());target.adapter.max_response_bytes=1024
-    limits=Limits(requests_per_second=50)
+    limits=Limits(max_tests=10, requests_per_second=50)
     result=await ExecutionAgent(target,limits,Budget(limits),asyncio.Event(),asyncio.Event()).execute(single_case())
     evaluation=EvaluationAgent(OfflineGateway()).evaluate(single_case(),result)
     assert evaluation['classification']=='ERROR'
@@ -101,7 +101,7 @@ def test_token_and_cost_caps():
 def test_resume_skips_completed_http_evidence(tmp_path,campus_url):
     with TestClient(create_app(tmp_path)) as client:
         target=client.post('/api/targets',json=demo_target(campus_url)).json()
-        id=client.post('/api/runs',json={'target_id':target['id'],'limits':{'requests_per_second':50}}).json()['id']
+        id=client.post('/api/runs',json={'target_id':target['id'],'limits':{'max_tests':10,'requests_per_second':50}}).json()['id']
         client.post('/api/runs/'+id+'/start');run=wait_run(client,id)
     # Simulate restart after HTTP evidence was saved, before the final evaluation.
     app=create_app(tmp_path)
@@ -120,7 +120,7 @@ def test_immediate_cancel_and_stopped_limit_changes(tmp_path,campus_url):
         target=client.post('/api/targets',json=demo_target(campus_url)).json()
         run=client.post('/api/runs',json={'target_id':target['id']}).json()
         id=run['id']
-        assert client.patch('/api/runs/'+id+'/limits',json=Limits(max_requests=80).model_dump()).status_code==200
+        assert client.patch('/api/runs/'+id+'/limits',json=Limits(max_tests=10, max_requests=80).model_dump()).status_code==200
         client.post('/api/runs/'+id+'/start');client.post('/api/runs/'+id+'/cancel')
         assert wait_run(client,id)['status']=='cancelled'
 
@@ -131,23 +131,26 @@ def test_live_pipeline_uses_retained_planner_and_gateway(tmp_path,campus_url,mon
     from services.taxonomy import SOURCES
     target=demo_target(campus_url)
     plan=objectives({'target':target})
+    plan['objectives']=plan['objectives'][:15]
     generated=cases({'target':target,'plan':plan,'test_count':10,'exploration':50})
-    responses=[{'queries':['Synthetic model security query']},{'test_priorities':[]},plan,generated]
+    responses=[{'queries':['Synthetic model security query']},{'test_priorities':[]},plan,{'cases':generated['cases'][:5]},{'cases':generated['cases'][5:]}]
     generate=Mock(side_effect=[Obj(text=json.dumps(r)) for r in responses])
     model=Obj(name='models/gemini-test',supported_actions=['generateContent'],input_token_limit=100000)
     monkeypatch.setattr(g,'gemini_client',Obj(models=Obj(generate_content=generate,list=lambda:[model])))
     monkeypatch.setattr(g,'GEMINI_MODEL','gemini-test')
+    monkeypatch.setattr(g,'GEMINI_FREE_MODELS',{'gemini-test'})
+    monkeypatch.setattr(g,'OPENROUTER_API_KEY',None)
     monkeypatch.setenv('TAVILY_API_KEY','synthetic-test-key')
     research=Mock(return_value=SOURCES)
     monkeypatch.setattr('web_research.WebResearcher.search_many',research)
     with TestClient(create_app(tmp_path)) as client:
         saved=client.post('/api/targets',json=target).json()
-        r=client.post('/api/runs',json={'target_id':saved['id'],'mode':'live','exploration':50,'limits':{'requests_per_second':50,'price_per_million':1}})
+        r=client.post('/api/runs',json={'target_id':saved['id'],'mode':'live','exploration':50,'limits':{'max_tests':10,'requests_per_second':50,'price_per_million':1}})
         assert r.status_code==201,r.text
         id=r.json()['id'];client.post('/api/runs/'+id+'/start');run=wait_run(client,id)
         assert run['status']=='completed',run['error']
-        assert generate.call_count==4 and research.call_count==1
-        assert run['usage']['requests']==15
+        assert generate.call_count==5 and research.call_count==1
+        assert run['usage']['requests']==16
         assert run['plan']['original_plan']=={'test_priorities':[]}
         assert run['report']['counts']['FAIL']==8
         assert run['provider_history'][0]['purpose']=='planner_research_strategy'

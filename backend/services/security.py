@@ -8,16 +8,20 @@ SECRET_ENV_KEYS = re.compile(r'api.?key|password|credential|secret|(?:^|_)(?:key
 
 
 def redact(value):
-    if isinstance(value, dict):
-        return {k: ('[REDACTED]' if SECRET_KEYS.search(k) and not isinstance(v, bool) else redact(v)) for k, v in value.items()}
-    if isinstance(value, list):
-        return [redact(v) for v in value]
-    if isinstance(value, str):
-        for name, secret in os.environ.items():
-            if SECRET_ENV_KEYS.search(name) and len(secret) >= 6:
-                value = value.replace(secret, '[REDACTED]')
-        value = re.sub(r'Bearer\s+[^\s"<>]+', 'Bearer [REDACTED]', value, flags=re.I)
-    return value
+    # Read environment secrets once per document, not once per string in a
+    # growing 200-case report. Refresh on every call so newly set keys are hidden.
+    secrets = [secret for name, secret in os.environ.items() if SECRET_ENV_KEYS.search(name) and len(secret) >= 6]
+    def visit(item):
+        if isinstance(item, dict):
+            return {k: ('[REDACTED]' if SECRET_KEYS.search(k) and not isinstance(v, bool) else visit(v)) for k, v in item.items()}
+        if isinstance(item, list):
+            return [visit(v) for v in item]
+        if isinstance(item, str):
+            for secret in secrets:
+                item = item.replace(secret, '[REDACTED]')
+            item = re.sub(r'Bearer\s+[^\s"<>]+', 'Bearer [REDACTED]', item, flags=re.I)
+        return item
+    return visit(value)
 
 
 def enforce_scope(target):
